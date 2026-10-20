@@ -1,0 +1,7 @@
+asyncio
+faster-whisper
+tqdm
+py-cord[voice]==2.7.1
+pynacl
+pydub
+torch

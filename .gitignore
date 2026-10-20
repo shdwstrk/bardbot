@@ -1,0 +1,8 @@
+.vscode/*
+.devcontainer/*
+bot.conf
+recordings/*
+transcripts/*
+character_names.json
+__pycache__/*
+.venv/*
