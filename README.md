@@ -1,0 +1,113 @@
+# Bardbot
+
+Bardbot is a Discord voice bot for recording tabletop role-playing sessions. It saves separate WAV files for each speaker, transcribes them with `faster-whisper`, and can create campaign recaps using an Ollama model.
+
+## What you need
+
+- Docker.
+- An NVIDIA GPU with compatible host drivers and NVIDIA Container Toolkit support. Transcription runs with CUDA and Whisper `large-v3`.
+- A Discord bot token. Enable **Message Content Intent** in the [Discord Developer Portal](https://discord.com/developers/applications) and invite the bot with permission to read and send messages, connect to and speak in voice channels, and attach files.
+- An Ollama server reachable from the container if you want to use `!summarize`. Recording and transcription do not require Ollama.
+
+Python, CUDA runtime libraries, `ffmpeg`, and the bot's Python packages are installed in the Docker image; you do not need to install them on the host.
+
+## Build and run
+
+Build the image from the project directory:
+
+```bash
+docker build -t bardbot .
+```
+
+Create host directories for persistent recordings and transcripts, then run the container:
+
+```bash
+mkdir -p recordings transcripts
+docker run --rm --gpus all \
+  -e DISCORD_TOKEN="your-discord-bot-token" \
+  -v "$PWD/recordings:/app/recordings" \
+  -v "$PWD/transcripts:/app/transcripts" \
+  bardbot
+```
+
+The bind mounts preserve recordings and transcripts after the container stops. Keep the bot token private; do not put it in source control or the image.
+
+The image uses NVIDIA CUDA. `--gpus all` requires a working NVIDIA Container Toolkit installation on the Docker host.
+
+### Optional character names
+
+To use character or player names in summaries, copy `character_names_template.json` to `character_names.json`, replace the example IDs with Discord user IDs, and mount the file read-only:
+
+```bash
+docker run --rm --gpus all \
+  -e DISCORD_TOKEN="your-discord-bot-token" \
+  -v "$PWD/recordings:/app/recordings" \
+  -v "$PWD/transcripts:/app/transcripts" \
+  -v "$PWD/character_names.json:/app/character_names.json:ro" \
+  bardbot
+```
+
+The JSON file maps Discord user IDs (as strings) to display names. Without it, summaries use user IDs.
+
+### Ollama
+
+The default summary model is `llama3.1:latest`. Make sure that model is available in Ollama:
+
+```bash
+ollama pull llama3.1:latest
+```
+
+The bot connects to Ollama at `localhost:11434` by default. Since `localhost` inside the container refers to the container itself, set `OLLAMA_HOST` to the Ollama server's address when it runs elsewhere. For example, on Linux, add a host-gateway mapping and set the host:
+
+```bash
+docker run --rm --gpus all \
+  --add-host=host.docker.internal:host-gateway \
+  -e DISCORD_TOKEN="your-discord-bot-token" \
+  -e OLLAMA_HOST=host.docker.internal \
+  -v "$PWD/recordings:/app/recordings" \
+  -v "$PWD/transcripts:/app/transcripts" \
+  bardbot
+```
+
+## Discord commands
+
+Commands use the `!` prefix.
+
+| Command | Description |
+| --- | --- |
+| `!ping` | Check that the bot responds. |
+| `!join` | Join your current voice channel, or move to it if already connected. |
+| `!start_recording` | Start recording each speaker to a separate WAV file. |
+| `!stop_recording` | Stop the active recording and save its files. |
+| `!leave` | Stop an active recording, if any, and disconnect. |
+| `!list_sessions` | List recorded session directories. |
+| `!transcribe [session]` | Transcribe a recorded session. |
+| `!summarize [session]` | Summarize an existing transcript and send the summary file. |
+
+For `!transcribe` and `!summarize`, provide a session directory name to select a session. If omitted, the bot selects an entry from the recordings directory. Transcribe a session before summarizing it.
+
+## Configuration
+
+Set these environment variables with Docker's `-e NAME=value` option:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DISCORD_TOKEN` | Empty | Discord bot token; required. |
+| `RECORDINGS_DIR` | `recordings` | Directory for timestamped recording sessions. |
+| `TRANSCRIPTS_DIR` | `transcripts` | Directory for transcript and summary files. |
+| `OLLAMA_HOST` | `localhost` | Ollama hostname or IP address, without a URL scheme. |
+| `OLLAMA_PORT` | `11434` | Ollama server port. |
+| `OLLAMA_TIMEOUT_SECONDS` | `360` | Timeout for a summary request. |
+| `OLLAMA_MODEL` | `llama3.1:latest` | Ollama model used for summaries. |
+
+Transcripts are newline-delimited JSON records with speaker ID, start and end times, and text. Summaries are saved as `<session>_summary.txt`.
+
+## DAVE voice encryption
+
+This project currently pins Pycord to commit [`5088a0f`](https://github.com/Pycord-Development/pycord/commit/5088a0fb7419180e890e2627568a16131064483b), an unmerged experimental patch for DAVE voice reception. It is not an official Pycord release and may need to be replaced as upstream support evolves. Rebuild the Docker image after changing this dependency.
+
+Test recording in a DAVE-enabled channel before relying on it. The bot saves unencrypted WAV audio after receiving and decoding it; obtain participants' consent before recording.
+
+## Privacy
+
+Recording captures voice-channel participants. Obtain their consent before recording. Audio and transcript files are stored in the mounted directories; when `!summarize` is used, transcript text is sent to the configured Ollama server.

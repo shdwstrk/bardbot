@@ -1,0 +1,9 @@
+.git
+.venv
+__pycache__
+.vscode
+.devcontainer
+recordings
+transcripts
+character_names.json
+bot.conf
