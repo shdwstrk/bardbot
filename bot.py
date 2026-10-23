@@ -13,6 +13,7 @@ import requests
 from discord.ext import commands
 from pydub import AudioSegment
 from typing import Dict
+from recording import DaveWaveSink
 
 BASE_DIR = Path(__file__).resolve().parent
 DISCORD_TOKEN = str(os.getenv("DISCORD_TOKEN", ""))
@@ -28,10 +29,13 @@ if(Path("character_names.json").exists()):
 else:
     CHARACTER_MAP = {}
     
+
+    
 class BardBotClient(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.voice_client = None
+        self.recording_sink = None
 
     @commands.command()
     async def ping(self, ctx):
@@ -57,7 +61,7 @@ class BardBotClient(commands.Cog):
     async def leave(self, ctx):
         """Leave the current voice channel."""
         if self.voice_client:
-            if self.voice_client.recording:
+            if self.voice_client.is_recording():
                 self.voice_client.stop_recording()
                 print('Stopped recording before disconnecting.')
             await self.voice_client.disconnect()
@@ -75,17 +79,29 @@ class BardBotClient(commands.Cog):
             print('Failed to start recording: Not in a voice channel!')
             return
         else:
-            if self.voice_client.recording:
+            if self.voice_client.is_recording():
                 await ctx.send('Already recording!')
                 print('Failed to start recording: Already recording!')
                 return
-            self.voice_client.start_recording(
-                discord.sinks.WaveSink(),
-                self._recording_finished
-            )
+            sink = DaveWaveSink()
+            self.recording_sink = sink
+            try:
+                self.voice_client.start_recording(sink, self._recording_finished)
+            except Exception:
+                self.recording_sink = None
+                raise
             await ctx.send('Recording started!')
     
-    async def _recording_finished(self, sink):
+    def _recording_finished(self, error):
+        sink = self.recording_sink
+        if sink is None:
+            raise RuntimeError('Recording finished without an active sink.')
+        self.recording_sink = None
+
+        if error is not None:
+            print(f'Recording stopped with an error: {error!r}')
+
+        sink.cleanup()
         output_dir = RECORDINGS_DIR / datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
         output_dir.mkdir(parents=True, exist_ok=True)
         print("number of users recorded:", len(sink.audio_data.items()))
@@ -106,7 +122,7 @@ class BardBotClient(commands.Cog):
             await ctx.send('I am not in a voice channel!')
             print('Failed to stop recording: Not in a voice channel!')
             return
-        if not self.voice_client.recording:
+        if not self.voice_client.is_recording():
             await ctx.send('No recording in progress.')
             return
         else:
@@ -115,7 +131,7 @@ class BardBotClient(commands.Cog):
     
     @commands.command()
     async def transcribe(self, ctx, session: str = ""):
-        """Transcribe audio."""
+        """Transcribe audio. User can provide a session ID to transcribe or bot will use the most recent session by default."""
         await ctx.send('Transcribing audio... This may take a while depending on the length of the recording.')
         if session == "":
             session = os.listdir(RECORDINGS_DIR)[-1]  # Get the latest session
@@ -176,7 +192,7 @@ class BardBotClient(commands.Cog):
     
     @commands.command()
     async def summarize(self, ctx, session: str = ""):
-        """Summarize transcribed audio."""
+        """Summarize transcribed audio. User can provide a session ID to summarize or bot will use the most recent session by default."""
         await ctx.send('Summarizing audio...')
         print('Summarizing audio...')
         if session == "":
@@ -201,6 +217,61 @@ class BardBotClient(commands.Cog):
         await ctx.send(f'Summarizing transcript for session {session}...')
         print(f'Summarizing transcript for session {session}...')
         prompt = f"""You are a careful D&D campaign transcript chronicler. Summarize only facts supported by the transcript or relevant notes; do not invent events, entities, items, or outcomes. If a detail is uncertain, say it is not established. Write an evocative but factual campaign journal recap with sections for Session Summary, Key Moments, Characters and Places, Decisions and Consequences, Loot and Progression, Open Threats, and Next Session Actions.\n\nTranscript:\n{transcript_data}"""
+        response = await self.ask_ollama(ctx, prompt)
+        summary = (response.json().get("response") or "").strip()
+        summary_file = TRANSCRIPTS_DIR / f"{session}_summary.txt"
+        with open(summary_file, "w") as f:
+            f.write(summary)
+            print(f'Summary for session {session} saved to {summary_file}.')
+        
+        await ctx.send(file=discord.File(summary_file))
+        
+    @commands.command()
+    async def list_sessions(self, ctx):
+        """List all recorded sessions IDs."""
+        sessions = sorted(os.listdir(RECORDINGS_DIR))
+        if not sessions:
+            await ctx.send('No recorded sessions found.')
+            print('No recorded sessions found.')
+            return
+        session_list = "\n".join(sessions)
+        await ctx.send(f'Available recorded sessions:\n{session_list}')
+        print("Session list sent to channel.")
+
+    @commands.command()
+    async def recap(self, ctx):
+        """Recalls the last session.
+        Gives a more play-by-play style recap."""
+        session = os.listdir(RECORDINGS_DIR)[-1] 
+        transcript_file = Path(TRANSCRIPTS_DIR / f"{session}.txt")
+        if not transcript_file.exists():
+            await ctx.send(f'Transcript for session {session} does not exist. Please transcribe the session first.')
+            print(f'Transcript for session {session} does not exist. Please transcribe the session first.')
+            return
+        transcript_data = ""
+        with open(transcript_file, "r") as transcript:
+            for line in transcript:
+                item = json.loads(line)
+                text = item.get("text", "").strip()
+                userid = item.get('user_id')
+                user = CHARACTER_MAP.get(userid, userid)
+                transcript_data += f"{user} : {text}\n"
+        if len(transcript_data) < 10:
+            await ctx.send(f'Transcript for session {session} is too short to summarize or is empty.')
+            print(f'Transcript for session {session} is too short to summarize or is empty.')
+            return
+        await ctx.send(f'Recapping transcript for session {session}...')
+        print(f'Recapping transcript for session {session}...')
+        prompt = f"""You are a careful D&D campaign transcript chronicler. Provide a summarized, beat-by-beat recap of the previous session using the transcript provided. Add flair to the recap, but do not invent information. Only use information that is included in the transcript.\n\nTranscript:\n{transcript_data}"""
+        response = await self.ask_ollama(ctx, prompt)
+        recap = (response.json().get("response") or "").strip()
+        recap_file = TRANSCRIPTS_DIR / f"{session}_recap.txt"
+        with open(recap_file, "w") as f:
+            f.write(recap)
+            print(f'Recap for session {session} saved to {recap_file}.')
+        await ctx.send(file=discord.File(recap_file))
+
+    async def ask_ollama(self, ctx, prompt) -> requests.Response:
         payload = {
             "model": OLLAMA_MODEL,
             "prompt": prompt,
@@ -218,34 +289,38 @@ class BardBotClient(commands.Cog):
                 timeout=OLLAMA_TIMEOUT_SECONDS,
             )
         except requests.exceptions.ReadTimeout:
-            print("Ollama timed out after %.0f seconds while summarizing session %s", OLLAMA_TIMEOUT_SECONDS, session)
+            print("Ollama timed out after %.0f seconds processing request.", OLLAMA_TIMEOUT_SECONDS)
             await ctx.send(
-                f"Ollama did not finish summarizing within {OLLAMA_TIMEOUT_SECONDS:.0f} seconds. "
+                f"Ollama did not finish processing request within {OLLAMA_TIMEOUT_SECONDS:.0f} seconds. "
                 "Try again, increase OLLAMA_TIMEOUT_SECONDS, or use a smaller model/context."
             )
-            return
         response.raise_for_status()
-        summary = (response.json().get("response") or "").strip()
-        summary_file = TRANSCRIPTS_DIR / f"{session}_summary.txt"
-        with open(summary_file, "w") as f:
-            f.write(summary)
-            print(f'Summary for session {session} saved to {summary_file}.')
+        return response
+
+    @commands.Cog.listener()
+    async def on_command_error(self, ctx: commands.Context, error: commands.CommandError):
+        """A global error handler for all prefixed commands."""
         
-        await ctx.send(file=discord.File(summary_file))
-        
-    @commands.command()
-    async def list_sessions(self, ctx):
-        """List all recorded sessions."""
-        sessions = sorted(os.listdir(RECORDINGS_DIR))
-        if not sessions:
-            await ctx.send('No recorded sessions found.')
-            print('No recorded sessions found.')
+        # Prevent double-firing if a command has its own local error handler
+        if hasattr(ctx.command, 'on_error'):
             return
-        session_list = "\n".join(sessions)
-        await ctx.send(f'Available recorded sessions:\n{session_list}')
-        print("Session list sent to channel.")
-        
-    
+
+        # Catch when a user triggers an unknown command
+        if isinstance(error, commands.CommandNotFound):
+            await ctx.send(f"`{ctx.invoked_with}` is not a valid command. Type `!help` for assistance.")
+            return
+
+        # Catch missing required arguments
+        if isinstance(error, commands.MissingRequiredArgument):
+            if ctx.command is not None:
+                await ctx.send(f"Missing parameters. Usage: `{ctx.prefix}{ctx.command.qualified_name} {ctx.command.signature}`")
+            else:
+                await ctx.send("Missing parameters.")
+            return
+
+        # Fallback to printing unhandled exceptions to your Unraid/terminal log
+        print(f"Unhandled exception in command '{ctx.command}':", error)
+
         
 intents = discord.Intents.default()
 intents.message_content = True
@@ -255,6 +330,7 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 async def on_ready():
     # Tell the type checker that User is filled up at this point
     assert bot.user is not None
+    print('------')
     print(f'Logged in as {bot.user} (ID: {bot.user.id})')
     print('------')
 

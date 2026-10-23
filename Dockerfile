@@ -9,7 +9,11 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     python3-pip \
     python3-dev \
+    git \
     ffmpeg \
+    build-essential \
+    cmake \
+    libopus-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip and install faster-whisper
