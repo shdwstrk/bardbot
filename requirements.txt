@@ -2,6 +2,5 @@ asyncio
 faster-whisper
 tqdm
 py-cord[voice] @ git+https://github.com/Pycord-Development/pycord.git@5088a0fb7419180e890e2627568a16131064483b
-pydub
 torch
 requests

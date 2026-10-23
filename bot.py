@@ -1,18 +1,14 @@
 import faster_whisper as whisper
 import tqdm
 import discord
-import io
 import os
 import asyncio
 import json
-import threading
 from datetime import datetime, timezone
 from pathlib import Path
 import requests
 
 from discord.ext import commands
-from pydub import AudioSegment
-from typing import Dict
 from recording import DaveWaveSink
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -23,6 +19,8 @@ OLLAMA_HOST = str(os.getenv("OLLAMA_HOST", "localhost"))
 OLLAMA_PORT = int(os.getenv("OLLAMA_PORT", "11434"))
 OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "360"))
 OLLAMA_MODEL = str(os.getenv("OLLAMA_MODEL", "llama3.1:latest"))
+
+# Load optional Discord-user display names for transcript summaries.
 if(Path("character_names.json").exists()):
     with open("character_names.json") as f:
         CHARACTER_MAP = json.load(f)
@@ -33,6 +31,7 @@ else:
     
 class BardBotClient(commands.Cog):
     def __init__(self, bot):
+        """Store the bot and initialize voice-recording state."""
         self.bot = bot
         self.voice_client = None
         self.recording_sink = None
@@ -93,6 +92,7 @@ class BardBotClient(commands.Cog):
             await ctx.send('Recording started!')
     
     def _recording_finished(self, error):
+        """Persist each speaker's completed WAV buffer in a timestamped session directory."""
         sink = self.recording_sink
         if sink is None:
             raise RuntimeError('Recording finished without an active sink.')
@@ -117,7 +117,7 @@ class BardBotClient(commands.Cog):
             
     @commands.command()
     async def stop_recording(self, ctx):
-        """Stop recording audio."""
+        """Stop recording audio and save to files."""
         if not self.voice_client or not self.voice_client.is_connected():
             await ctx.send('I am not in a voice channel!')
             print('Failed to stop recording: Not in a voice channel!')
@@ -143,6 +143,8 @@ class BardBotClient(commands.Cog):
         print('Transcribing audio... This may take a while depending on the length of the recording.')
         model = whisper.WhisperModel("large-v3", device="cuda", compute_type="float16")
         transcript = []
+
+        # Transcribe each speaker's WAV independently, retaining the filename's user ID.
         for audio_file in session_dir.glob("*.wav"):
             print(f'Transcribing {audio_file}...')
             with open(audio_file, "rb") as f:
@@ -170,6 +172,8 @@ class BardBotClient(commands.Cog):
                         })
                         pbar.update(segment.end - pbar.n)
             print(f'Transcription completed for {audio_file}.')
+
+        # Put all speakers on one timeline, then combine consecutive entries for the same speaker.
         print(f'Transcription completed for session {session}.')
         print(f"Sorting and merging transcript segments for session {session}...")
         transcript.sort(key=lambda x: (x["start"], x["end"]))
@@ -272,6 +276,7 @@ class BardBotClient(commands.Cog):
         await ctx.send(file=discord.File(recap_file))
 
     async def ask_ollama(self, ctx, prompt) -> requests.Response:
+        """Send a non-streaming generation request to the configured Ollama server."""
         payload = {
             "model": OLLAMA_MODEL,
             "prompt": prompt,
@@ -328,6 +333,7 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 
 @bot.event
 async def on_ready():
+    """Log the bot identity once Discord finishes connecting."""
     # Tell the type checker that User is filled up at this point
     assert bot.user is not None
     print('------')
@@ -335,6 +341,7 @@ async def on_ready():
     print('------')
 
 async def main():
+    """Register the command cog and run the Discord bot."""
     async with bot:
         bot.add_cog(BardBotClient(bot))
         await bot.start(DISCORD_TOKEN)

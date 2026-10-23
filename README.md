@@ -2,6 +2,14 @@
 
 Bardbot is a Discord voice bot for recording tabletop role-playing sessions. It saves separate WAV files for each speaker, transcribes them with `faster-whisper`, and can create campaign recaps using an Ollama model.
 
+## Acknowledgment
+
+The workflow of [Aitgray/BardBot](https://github.com/Aitgray/BardBot) inspired this project. The code here was independently generated and written; thank you to Aitgray for inspiring the project.
+
+## License
+
+This project's original code is licensed under the [MIT License](LICENSE). Third-party dependencies and other included materials remain subject to their respective licenses.
+
 ## What you need
 
 - Docker.
@@ -83,6 +91,7 @@ Commands use the `!` prefix.
 | `!list_sessions` | List recorded session directories. |
 | `!transcribe [session]` | Transcribe a recorded session. |
 | `!summarize [session]` | Summarize an existing transcript and send the summary file. |
+| `!recap` | Create a beat-by-beat recap of the latest session's transcript and send the recap file. |
 
 For `!transcribe` and `!summarize`, provide a session directory name to select a session. If omitted, the bot selects an entry from the recordings directory. Transcribe a session before summarizing it.
 
@@ -108,6 +117,18 @@ This project currently pins Pycord to commit [`5088a0f`](https://github.com/Pyco
 
 Test recording in a DAVE-enabled channel before relying on it. The bot saves unencrypted WAV audio after receiving and decoding it; obtain participants' consent before recording.
 
+## Future development
+
+Potential areas for future development include:
+
+- Add options for incorporation of user provided notes to pass to Ollama.
+- Replace the experimental Pycord pin with an official release once it supports DAVE voice reception.
+- Make transcription settings, such as the Whisper model, language, and compute device, configurable.
+- Improve speaker and character attribution beyond the current Discord-user name mapping.
+- Add automated tests for recording, transcription, and summary workflows.
+- Refine LLM prompts
+- Add functionality to auto configure AI models based on available resources.
+
 ## Privacy
 
-Recording captures voice-channel participants. Obtain their consent before recording. Audio and transcript files are stored in the mounted directories; when `!summarize` is used, transcript text is sent to the configured Ollama server.
+Recording captures voice-channel participants. Obtain their consent before recording. Audio and transcript files are stored in the mounted directories; when `!summarize` is used, transcript text is sent to the configured Ollama server. All data is processed locally, unless an external Ollama server is used. Some calls to Hugging Face to update the Whisper model will occur on first run.

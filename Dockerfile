@@ -1,5 +1,7 @@
 FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 
+LABEL org.opencontainers.image.description="Independently generated implementation inspired by https://github.com/Aitgray/BardBot"
+
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
