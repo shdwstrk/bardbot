@@ -4,6 +4,8 @@ bot.conf
 .env
 recordings/*
 transcripts/*
+text/*
 character_names.json
 __pycache__/*
 .venv/*
+tests/

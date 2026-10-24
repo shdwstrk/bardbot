@@ -4,17 +4,24 @@ import discord
 import os
 import asyncio
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Sequence
 import requests
 
 from discord.ext import commands
 from recording import DaveWaveSink
+from transcript_chunks import TranscriptSegment, chunk_transcript, read_transcript
 
 BASE_DIR = Path(__file__).resolve().parent
 DISCORD_TOKEN = str(os.getenv("DISCORD_TOKEN", ""))
 RECORDINGS_DIR = Path( BASE_DIR / os.getenv("RECORDINGS_DIR", "recordings"))
-TRANSCRIPTS_DIR = Path( BASE_DIR / os.getenv("TRANSCRIPTS_DIR", "transcripts"))
+TEXT_FILES_DIR = Path(BASE_DIR / os.getenv("TEXT_FILES_DIR", "text"))
+TRANSCRIPTS_DIR = TEXT_FILES_DIR / "transcripts"
+SUMMARIES_DIR = TEXT_FILES_DIR / "summaries"
+RECAPS_DIR = TEXT_FILES_DIR / "recaps"
+PROMPTS_DIR = BASE_DIR / "prompts"
 OLLAMA_HOST = str(os.getenv("OLLAMA_HOST", "localhost"))
 OLLAMA_PORT = int(os.getenv("OLLAMA_PORT", "11434"))
 OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "360"))
@@ -29,9 +36,15 @@ if(Path("character_names.json").exists()):
         CHARACTER_MAP = json.load(f)
 else:
     CHARACTER_MAP = {}
-    
 
-    
+def _load_prompt(prompt_name: str) -> str:
+    """Load system instructions for an Ollama generation request."""
+    prompt = (PROMPTS_DIR / prompt_name).read_text(encoding="utf-8").strip()
+    if not prompt:
+        raise ValueError(f"Prompt file {prompt_name} must not be empty.")
+    return prompt
+
+
 class BardBotClient(commands.Cog):
     def __init__(self, bot):
         """Store the bot and initialize voice-recording state."""
@@ -131,19 +144,38 @@ class BardBotClient(commands.Cog):
         else:
             self.voice_client.stop_recording()
             await ctx.send('Recording stopped!')
+
+    @staticmethod
+    def _latest_recording_session() -> Path | None:
+        """Return the newest timestamped recording directory, if one exists."""
+        if not RECORDINGS_DIR.is_dir():
+            return None
+        sessions = (entry for entry in RECORDINGS_DIR.iterdir() if entry.is_dir())
+        return max(sessions, key=lambda entry: entry.name, default=None)
     
     @commands.command()
     async def transcribe(self, ctx, session: str = ""):
         """Transcribe audio. User can provide a session ID to transcribe or bot will use the most recent session by default."""
         await ctx.send('Transcribing audio... This may take a while depending on the length of the recording.')
         if session == "":
-            session = os.listdir(RECORDINGS_DIR)[-1]  # Get the latest session
+            latest_session = self._latest_recording_session()
+            if latest_session is None:
+                await ctx.send('No recorded sessions found.')
+                print('No recorded sessions found.')
+                return
+            session = latest_session.name
         if not Path(RECORDINGS_DIR / session).exists():
             await ctx.send(f'Session {session} does not exist.')
             print(f'Session {session} does not exist.')
             return
         session_dir = Path(RECORDINGS_DIR / session )
         print('Transcribing audio... This may take a while depending on the length of the recording.')
+        await asyncio.to_thread(self._transcribe_session, session, session_dir)
+        await ctx.send(f'Transcription completed for session {session}. Transcript saved.')
+
+    @staticmethod
+    def _transcribe_session(session: str, session_dir: Path):
+        """Run Whisper and persist a session transcript outside the Discord event loop."""
         model = whisper.WhisperModel("large-v3", device="cuda", compute_type="float16")
         transcript = []
 
@@ -195,38 +227,98 @@ class BardBotClient(commands.Cog):
             for segment in merged_transcript:
                 f.write(json.dumps(segment) + "\n")
         print(f'Saving transcript for session {session}...')
-        await ctx.send(f'Transcription completed for session {session}. Transcript saved.')
     
+    async def _extract_transcript_facts(
+        self,
+        ctx: commands.Context,
+        segments: Sequence[TranscriptSegment],
+        extraction_prompt: str,
+    ) -> str:
+        """Extract source-grounded facts from overlapping transcript chunks."""
+        chunks = chunk_transcript(segments)
+        extracted_facts = []
+        progress_message = await ctx.send(
+            f"Extracting transcript facts (0/{len(chunks)} chunks)..."
+        )
+        for index, chunk in enumerate(chunks, start=1):
+            chunk_text = "\n".join(segment.render() for segment in chunk)
+            await progress_message.edit(
+                content=(
+                    f"Extracting transcript facts ({index}/{len(chunks)} chunks; "
+                    f"{len(chunk_text):,} characters in this chunk)..."
+                )
+            )
+            started_at = time.monotonic()
+            print(
+                f"Starting Ollama extraction for chunk {index}/{len(chunks)} "
+                f"({len(chunk_text):,} characters)."
+            )
+            try:
+                response = await self.ask_ollama(ctx, extraction_prompt, chunk_text)
+            except (TimeoutError, requests.RequestException):
+                await progress_message.edit(
+                    content=(
+                        f"Transcript extraction stopped at chunk "
+                        f"{index}/{len(chunks)}. See the bot logs for details."
+                    )
+                )
+                raise
+            facts = (response.json().get("response") or "").strip()
+            if not facts:
+                raise ValueError(f"Ollama returned no facts for transcript chunk {index}.")
+            extracted_facts.append(f"Chunk {index}:\n{facts}")
+            elapsed = time.monotonic() - started_at
+            print(
+                f"Finished Ollama extraction for chunk {index}/{len(chunks)} "
+                f"in {elapsed:.1f}s."
+            )
+            await progress_message.edit(
+                content=(
+                    f"Extracted transcript facts ({index}/{len(chunks)} chunks; "
+                    f"last chunk took {elapsed:.1f}s)."
+                )
+            )
+        return "\n\n".join(extracted_facts)
+
     @commands.command()
     async def summarize(self, ctx, session: str = ""):
         """Summarize transcribed audio. User can provide a session ID to summarize or bot will use the most recent session by default."""
         await ctx.send('Summarizing audio...')
         print('Summarizing audio...')
         if session == "":
-            session = os.listdir(RECORDINGS_DIR)[-1]  # Get the latest session
+            latest_session = self._latest_recording_session()
+            if latest_session is None:
+                await ctx.send('No recorded sessions found.')
+                print('No recorded sessions found.')
+                return
+            session = latest_session.name
         transcript_file = Path(TRANSCRIPTS_DIR / f"{session}.txt")
         if not transcript_file.exists():
             await ctx.send(f'Transcript for session {session} does not exist. Please transcribe the session first.')
             print(f'Transcript for session {session} does not exist. Please transcribe the session first.')
             return
-        transcript_data = ""
-        with open(transcript_file, "r") as transcript:
-            for line in transcript:
-                item = json.loads(line)
-                text = item.get("text", "").strip()
-                userid = item.get('user_id')
-                user = CHARACTER_MAP.get(userid, userid)
-                transcript_data += f"{user} : {text}\n"
-        if len(transcript_data) < 10:
+        segments = read_transcript(transcript_file, CHARACTER_MAP)
+        if sum(len(segment.text) for segment in segments) < 10:
             await ctx.send(f'Transcript for session {session} is too short to summarize or is empty.')
             print(f'Transcript for session {session} is too short to summarize or is empty.')
             return
         await ctx.send(f'Summarizing transcript for session {session}...')
         print(f'Summarizing transcript for session {session}...')
-        prompt = f"""You are a careful D&D campaign transcript chronicler. Summarize only facts supported by the transcript or relevant notes; do not invent events, entities, items, or outcomes. If a detail is uncertain, say it is not established. Write an evocative but factual campaign journal recap with sections for Session Summary, Key Moments, Characters and Places, Decisions and Consequences, Loot and Progression, Open Threats, and Next Session Actions.\n\nTranscript:\n{transcript_data}"""
-        response = await self.ask_ollama(ctx, prompt)
+        try:
+            system_prompt = _load_prompt("summarize.txt")
+            extraction_prompt = _load_prompt("extract.txt")
+        except (OSError, ValueError) as error:
+            print(f"Failed to load summarization prompt: {error}")
+            await ctx.send("Unable to load a summarization prompt. Check prompts/summarize.txt and prompts/extract.txt.")
+            return
+        extracted_facts = await self._extract_transcript_facts(
+            ctx, segments, extraction_prompt
+        )
+        await ctx.send("All transcript chunks extracted. Generating the summary...")
+        response = await self.ask_ollama(ctx, system_prompt, extracted_facts)
         summary = (response.json().get("response") or "").strip()
-        summary_file = TRANSCRIPTS_DIR / f"{session}_summary.txt"
+        summary_file = SUMMARIES_DIR / f"{session}.md"
+        SUMMARIES_DIR.mkdir(parents=True, exist_ok=True)
         with open(summary_file, "w") as f:
             f.write(summary)
             print(f'Summary for session {session} saved to {summary_file}.')
@@ -236,7 +328,9 @@ class BardBotClient(commands.Cog):
     @commands.command()
     async def list_sessions(self, ctx):
         """List all recorded sessions IDs."""
-        sessions = sorted(os.listdir(RECORDINGS_DIR))
+        sessions = sorted(
+            (entry.name for entry in RECORDINGS_DIR.iterdir() if entry.is_dir())
+        ) if RECORDINGS_DIR.is_dir() else []
         if not sessions:
             await ctx.send('No recorded sessions found.')
             print('No recorded sessions found.')
@@ -249,44 +343,58 @@ class BardBotClient(commands.Cog):
     async def recap(self, ctx):
         """Recalls the last session.
         Gives a more play-by-play style recap."""
-        session = os.listdir(RECORDINGS_DIR)[-1] 
+        latest_session = self._latest_recording_session()
+        if latest_session is None:
+            await ctx.send('No recorded sessions found.')
+            print('No recorded sessions found.')
+            return
+        session = latest_session.name
         transcript_file = Path(TRANSCRIPTS_DIR / f"{session}.txt")
         if not transcript_file.exists():
             await ctx.send(f'Transcript for session {session} does not exist. Please transcribe the session first.')
             print(f'Transcript for session {session} does not exist. Please transcribe the session first.')
             return
-        transcript_data = ""
-        with open(transcript_file, "r") as transcript:
-            for line in transcript:
-                item = json.loads(line)
-                text = item.get("text", "").strip()
-                userid = item.get('user_id')
-                user = CHARACTER_MAP.get(userid, userid)
-                transcript_data += f"{user} : {text}\n"
-        if len(transcript_data) < 10:
+        segments = read_transcript(transcript_file, CHARACTER_MAP)
+        if sum(len(segment.text) for segment in segments) < 10:
             await ctx.send(f'Transcript for session {session} is too short to summarize or is empty.')
             print(f'Transcript for session {session} is too short to summarize or is empty.')
             return
         await ctx.send(f'Recapping transcript for session {session}...')
         print(f'Recapping transcript for session {session}...')
-        prompt = f"""You are a careful D&D campaign transcript chronicler. Provide a summarized, beat-by-beat recap of the previous session using the transcript provided. Add flair to the recap, but do not invent information. Only use information that is included in the transcript.\n\nTranscript:\n{transcript_data}"""
-        response = await self.ask_ollama(ctx, prompt)
+        try:
+            system_prompt = _load_prompt("recap.txt")
+            extraction_prompt = _load_prompt("extract.txt")
+        except (OSError, ValueError) as error:
+            print(f"Failed to load recap prompt: {error}")
+            await ctx.send("Unable to load a recap prompt. Check prompts/recap.txt and prompts/extract.txt.")
+            return
+        extracted_facts = await self._extract_transcript_facts(
+            ctx, segments, extraction_prompt
+        )
+        await ctx.send("All transcript chunks extracted. Generating the recap...")
+        response = await self.ask_ollama(ctx, system_prompt, extracted_facts)
         recap = (response.json().get("response") or "").strip()
-        recap_file = TRANSCRIPTS_DIR / f"{session}_recap.txt"
+        recap_file = RECAPS_DIR / f"{session}.md"
+        RECAPS_DIR.mkdir(parents=True, exist_ok=True)
         with open(recap_file, "w") as f:
             f.write(recap)
             print(f'Recap for session {session} saved to {recap_file}.')
         await ctx.send(file=discord.File(recap_file))
 
-    async def ask_ollama(self, ctx, prompt) -> requests.Response:
+    async def ask_ollama(
+        self, ctx, system_prompt: str, transcript_data: str
+    ) -> requests.Response:
         """Send a non-streaming generation request to the configured Ollama server."""
         payload = {
             "model": OLLAMA_MODEL,
-            "prompt": prompt,
+            "system": system_prompt,
+            "prompt": transcript_data,
             "stream": False,
             "options": {
-                "num_ctx": 65000,
-                "temp": 0.2
+                #"num_ctx": 65536,
+                "temperature": 0.2,
+                "kv_cache_type":"q8_0", #default cache type overflows my 3080 Ti, so this reduces the size to fit completely on the GPU.
+                #"num_predict":2048
             }
         }
         try:
@@ -296,12 +404,13 @@ class BardBotClient(commands.Cog):
                 json=payload,
                 timeout=OLLAMA_TIMEOUT_SECONDS,
             )
-        except requests.exceptions.ReadTimeout:
-            print("Ollama timed out after %.0f seconds processing request.", OLLAMA_TIMEOUT_SECONDS)
+        except requests.exceptions.ReadTimeout as error:
+            print(f"Ollama timed out after {OLLAMA_TIMEOUT_SECONDS:.0f} seconds processing request.")
             await ctx.send(
                 f"Ollama did not finish processing request within {OLLAMA_TIMEOUT_SECONDS:.0f} seconds. "
                 "Try again, increase OLLAMA_TIMEOUT_SECONDS, or use a smaller model/context."
             )
+            raise TimeoutError("Ollama request timed out.") from error
         response.raise_for_status()
         return response
 

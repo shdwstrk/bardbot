@@ -27,18 +27,19 @@ Build the image from the project directory:
 docker build -t bardbot .
 ```
 
-Create host directories for persistent recordings and transcripts, then run the container:
+Create host directories for persistent recordings and text output, then run the container:
 
 ```bash
-mkdir -p recordings transcripts
+mkdir -p recordings text
 docker run --rm --gpus all \
   -e DISCORD_TOKEN="your-discord-bot-token" \
   -v "$PWD/recordings:/app/recordings" \
-  -v "$PWD/transcripts:/app/transcripts" \
+  -v "$PWD/text:/app/text" \
+  -v "$PWD/prompts:/app/prompts:ro" \
   bardbot
 ```
 
-The bind mounts preserve recordings and transcripts after the container stops. Keep the bot token private; do not put it in source control or the image.
+The bind mounts preserve recordings and text output after the container stops. Transcripts, summaries, and recaps are stored in separate `text/transcripts`, `text/summaries`, and `text/recaps` directories under the single `text` mount. The prompt directory is mounted read-only so you can edit the prompt files on the host and have changes picked up on the next `!summarize` or `!recap` command without rebuilding the image. Keep the bot token private; do not put it in source control or the image.
 
 The image uses NVIDIA CUDA. `--gpus all` requires a working NVIDIA Container Toolkit installation on the Docker host.
 Bot output is written to stdout and stderr, which Docker captures as container logs. View it with `docker logs -f <container>` (find the container name or ID with `docker ps`). Python output is unbuffered in the image, so messages appear in the logs as they are written.
@@ -57,13 +58,17 @@ Then build and start the bot:
 docker compose up --build -d
 ```
 
-Compose starts Bardbot and Ollama on a dedicated `bardbot-network` bridge network. Bardbot waits for the Ollama server, then asks it to pull the configured summary model (default `llama3.1:latest`) before connecting to Discord. The model is stored in Ollama's named volume. Follow startup with `docker compose logs -f bardbot` to see when the pull starts and completes. Recordings and transcripts are mounted from the project directory. Bardbot and Ollama request access to all NVIDIA GPUs; the host must have Docker Compose and a working NVIDIA Container Toolkit installation.
+Compose starts Bardbot and Ollama on a dedicated `bardbot-network` bridge network. Bardbot waits for the Ollama server, then asks it to pull the configured summary model (default `llama3.1:latest`) before connecting to Discord. The model is stored in Ollama's named volume. Follow startup with `docker compose logs -f bardbot` to see when the pull starts and completes. Recordings and text files are mounted from the project directory. Bardbot and Ollama request access to all NVIDIA GPUs; the host must have Docker Compose and a working NVIDIA Container Toolkit installation.
 
 To use a different model, set `OLLAMA_MODEL` in `.env`. For example:
 
 ```dotenv
 OLLAMA_MODEL=qwen2.5:latest
 ```
+
+### Editing recap prompts
+
+The `prompts/extract.txt` file guides transcript fact extraction. `prompts/summarize.txt` and `prompts/recap.txt` guide the final output for `!summarize` and `!recap`, respectively. Bardbot processes transcripts in chronological, overlapping chunks, extracts facts with segment references, then asks Ollama to synthesize the combined facts. Each prompt file is sent as the system instructions, separately from its content, through Ollama's generate API. Do not add a `{transcript}` placeholder. Bardbot reads the prompt files each time a command runs, so edits take effect immediately when the `prompts` directory is mounted as shown above. Docker Compose mounts it automatically.
 
 Stop the services with `docker compose down` to remove their containers and network. The `.env` file is ignored by Git; keep your token private.
 
@@ -75,7 +80,7 @@ To use character or player names in summaries, copy `character_names_template.js
 docker run --rm --gpus all \
   -e DISCORD_TOKEN="your-discord-bot-token" \
   -v "$PWD/recordings:/app/recordings" \
-  -v "$PWD/transcripts:/app/transcripts" \
+  -v "$PWD/text:/app/text" \
   -v "$PWD/character_names.json:/app/character_names.json:ro" \
   bardbot
 ```
@@ -98,7 +103,7 @@ docker run --rm --gpus all \
   -e DISCORD_TOKEN="your-discord-bot-token" \
   -e OLLAMA_HOST=host.docker.internal \
   -v "$PWD/recordings:/app/recordings" \
-  -v "$PWD/transcripts:/app/transcripts" \
+  -v "$PWD/text:/app/text" \
   bardbot
 ```
 
@@ -118,7 +123,9 @@ Commands use the `!` prefix.
 | `!summarize [session]` | Summarize an existing transcript and send the summary file. |
 | `!recap` | Create a beat-by-beat recap of the latest session's transcript and send the recap file. |
 
-For `!transcribe` and `!summarize`, provide a session directory name to select a session. If omitted, the bot selects an entry from the recordings directory. Transcribe a session before summarizing it.
+For `!transcribe` and `!summarize`, provide a session directory name to select a session. If omitted, the bot selects the newest timestamped session directory. Transcribe a session before summarizing it.
+
+Transcription runs outside Discord's async event loop, so the bot can continue responding to Discord while Whisper processes audio. The `!transcribe` command sends a completion message when the transcript has been saved.
 
 ## Configuration
 
@@ -128,7 +135,7 @@ Set these environment variables with Docker's `-e NAME=value` option:
 | --- | --- | --- |
 | `DISCORD_TOKEN` | Empty | Discord bot token; required. |
 | `RECORDINGS_DIR` | `recordings` | Directory for timestamped recording sessions. |
-| `TRANSCRIPTS_DIR` | `transcripts` | Directory for transcript and summary files. |
+| `TEXT_FILES_DIR` | `text` | Parent directory for text output. Transcripts, summaries, and recaps are stored in its `transcripts`, `summaries`, and `recaps` subdirectories. |
 | `OLLAMA_HOST` | `localhost` | Ollama hostname or IP address, without a URL scheme. |
 | `OLLAMA_PORT` | `11434` | Ollama server port. |
 | `OLLAMA_TIMEOUT_SECONDS` | `360` | Timeout for a summary request. |
@@ -137,7 +144,7 @@ Set these environment variables with Docker's `-e NAME=value` option:
 | `OLLAMA_STARTUP_TIMEOUT_SECONDS` | `120` | How long to wait for Ollama to become available when auto-pull is enabled. |
 | `OLLAMA_PULL_TIMEOUT_SECONDS` | `3600` | Maximum time to wait for the model pull to complete. |
 
-Transcripts are newline-delimited JSON records with speaker ID, start and end times, and text. Summaries are saved as `<session>_summary.txt`.
+Transcripts are newline-delimited JSON records with speaker ID, start and end times, and text. Transcripts are saved as `<session>.txt`; summaries and recaps are saved as `<session>.md` in their respective subdirectories. To retain existing files, move old transcript files into `text/transcripts`, summary files into `text/summaries` (renaming them to `<session>.md`), and recap files into `text/recaps` (also renaming them to `<session>.md`).
 
 ## DAVE voice encryption
 
@@ -160,4 +167,4 @@ Potential areas for future development include:
 
 ## Privacy
 
-Recording captures voice-channel participants. Obtain their consent before recording. Audio and transcript files are stored in the mounted directories; when `!summarize` is used, transcript text is sent to the configured Ollama server. All data is processed locally, unless an external Ollama server is used. Some calls to Hugging Face to update the Whisper model will occur on first run.
+Recording captures voice-channel participants. Obtain their consent before recording. Audio and text files are stored in the mounted directories; when `!summarize` is used, transcript text is sent to the configured Ollama server. All data is processed locally, unless an external Ollama server is used. Some calls to Hugging Face to update the Whisper model will occur on first run.

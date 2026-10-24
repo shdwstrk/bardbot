@@ -12,7 +12,8 @@ services:
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:latest}
     volumes:
       - ./recordings:/app/recordings
-      - ./transcripts:/app/transcripts
+      - ./text:/app/text
+      - ./prompts:/app/prompts:ro
     depends_on:
       ollama:
         condition: service_started
@@ -28,6 +29,8 @@ services:
 
   ollama:
     image: ollama/ollama
+    ports:
+      - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
     networks:
