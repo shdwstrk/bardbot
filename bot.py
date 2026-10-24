@@ -19,6 +19,9 @@ OLLAMA_HOST = str(os.getenv("OLLAMA_HOST", "localhost"))
 OLLAMA_PORT = int(os.getenv("OLLAMA_PORT", "11434"))
 OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "360"))
 OLLAMA_MODEL = str(os.getenv("OLLAMA_MODEL", "llama3.1:latest"))
+OLLAMA_AUTO_PULL = os.getenv("OLLAMA_AUTO_PULL", "false").lower() in {"1", "true", "yes"}
+OLLAMA_STARTUP_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_STARTUP_TIMEOUT_SECONDS", "120"))
+OLLAMA_PULL_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_PULL_TIMEOUT_SECONDS", "3600"))
 
 # Load optional Discord-user display names for transcript summaries.
 if(Path("character_names.json").exists()):
@@ -331,6 +334,38 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
+async def pull_ollama_model():
+    """Wait for Ollama, then ask it to pull the configured model."""
+    base_url = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}"
+    deadline = asyncio.get_running_loop().time() + OLLAMA_STARTUP_TIMEOUT_SECONDS
+
+    while True:
+        try:
+            response = await asyncio.to_thread(
+                requests.get,
+                f"{base_url}/api/version",
+                timeout=5,
+            )
+            response.raise_for_status()
+            break
+        except requests.exceptions.RequestException as error:
+            if asyncio.get_running_loop().time() >= deadline:
+                raise RuntimeError(
+                    f"Ollama did not become available at {base_url} "
+                    f"within {OLLAMA_STARTUP_TIMEOUT_SECONDS:.0f} seconds."
+                ) from error
+            await asyncio.sleep(2)
+
+    print(f"Pulling Ollama model {OLLAMA_MODEL}...")
+    response = await asyncio.to_thread(
+        requests.post,
+        f"{base_url}/api/pull",
+        json={"model": OLLAMA_MODEL, "stream": False},
+        timeout=(5, OLLAMA_PULL_TIMEOUT_SECONDS),
+    )
+    response.raise_for_status()
+    print(f"Ollama model {OLLAMA_MODEL} is ready.")
+
 @bot.event
 async def on_ready():
     """Log the bot identity once Discord finishes connecting."""
@@ -342,6 +377,8 @@ async def on_ready():
 
 async def main():
     """Register the command cog and run the Discord bot."""
+    if OLLAMA_AUTO_PULL:
+        await pull_ollama_model()
     async with bot:
         bot.add_cog(BardBotClient(bot))
         await bot.start(DISCORD_TOKEN)

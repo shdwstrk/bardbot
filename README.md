@@ -41,6 +41,31 @@ docker run --rm --gpus all \
 The bind mounts preserve recordings and transcripts after the container stops. Keep the bot token private; do not put it in source control or the image.
 
 The image uses NVIDIA CUDA. `--gpus all` requires a working NVIDIA Container Toolkit installation on the Docker host.
+Bot output is written to stdout and stderr, which Docker captures as container logs. View it with `docker logs -f <container>` (find the container name or ID with `docker ps`). Python output is unbuffered in the image, so messages appear in the logs as they are written.
+
+### Docker Compose
+
+For a reusable setup, create a `.env` file in the project directory:
+
+```dotenv
+DISCORD_TOKEN=your-discord-bot-token
+```
+
+Then build and start the bot:
+
+```bash
+docker compose up --build -d
+```
+
+Compose starts Bardbot and Ollama on a dedicated `bardbot-network` bridge network. Bardbot waits for the Ollama server, then asks it to pull the configured summary model (default `llama3.1:latest`) before connecting to Discord. The model is stored in Ollama's named volume. Follow startup with `docker compose logs -f bardbot` to see when the pull starts and completes. Recordings and transcripts are mounted from the project directory. Bardbot and Ollama request access to all NVIDIA GPUs; the host must have Docker Compose and a working NVIDIA Container Toolkit installation.
+
+To use a different model, set `OLLAMA_MODEL` in `.env`. For example:
+
+```dotenv
+OLLAMA_MODEL=qwen2.5:latest
+```
+
+Stop the services with `docker compose down` to remove their containers and network. The `.env` file is ignored by Git; keep your token private.
 
 ### Optional character names
 
@@ -59,13 +84,13 @@ The JSON file maps Discord user IDs (as strings) to display names. Without it, s
 
 ### Ollama
 
-The default summary model is `llama3.1:latest`. Make sure that model is available in Ollama:
+The default summary model is `llama3.1:latest`. With Compose, Bardbot asks Ollama to pull the configured model at startup. For an Ollama server running outside Compose, you can enable the same behavior by setting `OLLAMA_AUTO_PULL=true`. Otherwise, make sure the model is available there:
 
 ```bash
 ollama pull llama3.1:latest
 ```
 
-The bot connects to Ollama at `localhost:11434` by default. Since `localhost` inside the container refers to the container itself, set `OLLAMA_HOST` to the Ollama server's address when it runs elsewhere. For example, on Linux, add a host-gateway mapping and set the host:
+The bot connects to the Compose Ollama service by default. For an Ollama server running outside Compose, set `OLLAMA_HOST` to that server's hostname or IP address. With `docker run` on Linux, for example, add a host-gateway mapping and set the host:
 
 ```bash
 docker run --rm --gpus all \
@@ -108,6 +133,9 @@ Set these environment variables with Docker's `-e NAME=value` option:
 | `OLLAMA_PORT` | `11434` | Ollama server port. |
 | `OLLAMA_TIMEOUT_SECONDS` | `360` | Timeout for a summary request. |
 | `OLLAMA_MODEL` | `llama3.1:latest` | Ollama model used for summaries. |
+| `OLLAMA_AUTO_PULL` | `false` | Ask Ollama to pull the configured model before the bot connects to Discord. |
+| `OLLAMA_STARTUP_TIMEOUT_SECONDS` | `120` | How long to wait for Ollama to become available when auto-pull is enabled. |
+| `OLLAMA_PULL_TIMEOUT_SECONDS` | `3600` | Maximum time to wait for the model pull to complete. |
 
 Transcripts are newline-delimited JSON records with speaker ID, start and end times, and text. Summaries are saved as `<session>_summary.txt`.
 
@@ -128,6 +156,7 @@ Potential areas for future development include:
 - Add automated tests for recording, transcription, and summary workflows.
 - Refine LLM prompts
 - Add functionality to auto configure AI models based on available resources.
+- Add functionality to use older session data when creating summaries and recaps.
 
 ## Privacy
 

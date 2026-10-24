@@ -1,6 +1,7 @@
 .vscode/*
 .devcontainer/*
 bot.conf
+.env
 recordings/*
 transcripts/*
 character_names.json

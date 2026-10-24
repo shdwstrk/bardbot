@@ -4,6 +4,7 @@ LABEL org.opencontainers.image.description="Independently generated implementati
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
