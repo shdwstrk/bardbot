@@ -1,6 +1,6 @@
 services:
   bardbot:
-    build: https://github.com/shdwstrk/bardbot.git#main
+    image: shdwstrk/bardbot
     environment:
       DISCORD_TOKEN: ${DISCORD_TOKEN:?Set DISCORD_TOKEN in .env or the shell environment}
       OLLAMA_HOST: ${OLLAMA_HOST:-ollama}

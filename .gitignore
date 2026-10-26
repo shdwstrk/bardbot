@@ -6,4 +6,7 @@ recordings/*
 transcripts/*
 character_names.json
 __pycache__/*
+.pytest_cache/*
 .venv/*
+tests/*
+text/*

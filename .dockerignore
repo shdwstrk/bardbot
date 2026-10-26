@@ -1,9 +1,16 @@
+.dockerignore
+compose.yaml
 .git
+.gitignore
 .venv
+.env
 __pycache__
+.pytest_cache
 .vscode
 .devcontainer
 recordings
 transcripts
+text
+tests
 character_names.json
 bot.conf

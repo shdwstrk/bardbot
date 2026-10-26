@@ -23,6 +23,9 @@ OLLAMA_AUTO_PULL = os.getenv("OLLAMA_AUTO_PULL", "false").lower() in {"1", "true
 OLLAMA_STARTUP_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_STARTUP_TIMEOUT_SECONDS", "120"))
 OLLAMA_PULL_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_PULL_TIMEOUT_SECONDS", "3600"))
 
+TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+
 # Load optional Discord-user display names for transcript summaries.
 if(Path("character_names.json").exists()):
     with open("character_names.json") as f:
@@ -190,7 +193,6 @@ class BardBotClient(commands.Cog):
             else:
                 merged_transcript.append(segment)
         transcript_file = TRANSCRIPTS_DIR / f"{session}.txt"
-        TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
         with open(transcript_file, "w") as f:
             for segment in merged_transcript:
                 f.write(json.dumps(segment) + "\n")
