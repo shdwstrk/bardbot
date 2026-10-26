@@ -19,12 +19,12 @@ This project's original code is licensed under the [MIT License](LICENSE). Third
 
 Python, CUDA runtime libraries, `ffmpeg`, and the bot's Python packages are installed in the Docker image; you do not need to install them on the host.
 
-## Build and run
+## Run the published image
 
-Build the image from the project directory:
+The Bardbot image is published on Docker Hub as [`shdwstrk/bardbot`](https://hub.docker.com/r/shdwstrk/bardbot). Docker pulls it automatically when needed; to pull it explicitly:
 
 ```bash
-docker build -t bardbot .
+docker pull shdwstrk/bardbot:latest
 ```
 
 Create host directories for persistent recordings and transcripts, then run the container:
@@ -35,13 +35,15 @@ docker run --rm --gpus all \
   -e DISCORD_TOKEN="your-discord-bot-token" \
   -v "$PWD/recordings:/app/recordings" \
   -v "$PWD/transcripts:/app/transcripts" \
-  bardbot
+  shdwstrk/bardbot:latest
 ```
 
 The bind mounts preserve recordings and transcripts after the container stops. Keep the bot token private; do not put it in source control or the image.
 
 The image uses NVIDIA CUDA. `--gpus all` requires a working NVIDIA Container Toolkit installation on the Docker host.
 Bot output is written to stdout and stderr, which Docker captures as container logs. View it with `docker logs -f <container>` (find the container name or ID with `docker ps`). Python output is unbuffered in the image, so messages appear in the logs as they are written.
+
+To build the image from source instead, run `docker build -t bardbot .` from the project directory and use `bardbot` in the `docker run` command.
 
 ### Docker Compose
 
@@ -51,10 +53,11 @@ For a reusable setup, create a `.env` file in the project directory:
 DISCORD_TOKEN=your-discord-bot-token
 ```
 
-Then build and start the bot:
+Then pull the published Bardbot image and start the services:
 
 ```bash
-docker compose up --build -d
+docker compose pull
+docker compose up -d
 ```
 
 Compose starts Bardbot and Ollama on a dedicated `bardbot-network` bridge network. Bardbot waits for the Ollama server, then asks it to pull the configured summary model (default `llama3.1:latest`) before connecting to Discord. The model is stored in Ollama's named volume. Follow startup with `docker compose logs -f bardbot` to see when the pull starts and completes. Recordings and transcripts are mounted from the project directory. Bardbot and Ollama request access to all NVIDIA GPUs; the host must have Docker Compose and a working NVIDIA Container Toolkit installation.
@@ -77,7 +80,7 @@ docker run --rm --gpus all \
   -v "$PWD/recordings:/app/recordings" \
   -v "$PWD/transcripts:/app/transcripts" \
   -v "$PWD/character_names.json:/app/character_names.json:ro" \
-  bardbot
+  shdwstrk/bardbot:latest
 ```
 
 The JSON file maps Discord user IDs (as strings) to display names. Without it, summaries use user IDs.
@@ -99,7 +102,7 @@ docker run --rm --gpus all \
   -e OLLAMA_HOST=host.docker.internal \
   -v "$PWD/recordings:/app/recordings" \
   -v "$PWD/transcripts:/app/transcripts" \
-  bardbot
+  shdwstrk/bardbot:latest
 ```
 
 ## Discord commands
