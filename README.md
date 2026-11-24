@@ -1,3 +1,9 @@
+<p align="center">
+  <img src="assets/bardbot.jpg" alt="Bardbot" width="320">
+</p>
+
+# <img src="assets/bardbot_icon.jpg" alt="" width="36" valign="middle"> Bardbot
+
 # Bardbot
 
 Bardbot is a Discord voice bot for recording tabletop role-playing sessions. It saves separate WAV files for each speaker, transcribes them with `faster-whisper`, and can create campaign recaps using an Ollama model.

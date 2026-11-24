@@ -287,7 +287,7 @@ class BardBotClient(commands.Cog):
             "prompt": prompt,
             "stream": False,
             "options": {
-                "num_ctx": 65000,
+                "num_ctx": 65536,
                 "temp": 0.2
             }
         }
